@@ -7,7 +7,7 @@
 #' and start their analysis from the already computed signatures
 #' 
 #' @examples
-#' if (interactive()){
+#' if (interactive()) {
 #' downloadPertSig("CMAP")
 #' }
 #'  
@@ -27,7 +27,6 @@
 #' @import downloader
 downloadPertSig <- function(name, saveDir=file.path(".", "PSets", "Sigs"),
     myfn=NULL, verbose=TRUE) {
-
 
     pSetTable <- availablePSets(canonical=FALSE)
 

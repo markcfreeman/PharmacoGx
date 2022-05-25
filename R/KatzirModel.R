@@ -49,7 +49,10 @@
   return(errorEstimates)
 }
 
-#' Fits curves of the form * 
+#' Predicts the viability of cells exposed to combinations of different drugs at
+#' different concentrations acting in accordance with the drug synergy model of
+#' Zimmer et al. in their 2016 paper "Prediction of multidimensional drug dose
+#' responses based on measurements of drug pairs".
 #'
 #' @examples
 #' x <- c(0.0025,0.008,0.025,0.08,0.25,0.8,2.53,8)
@@ -59,41 +62,84 @@
 #' A <- matrix(c(1, 0.98, 1.22, 0.45, 1, 1.32, 0.92, 1.08, 1), ncol = 3)
 #' Zimmer(conc, EC50, HS, A)
 #' 
-#' @param conc `numeric` is a *
-#' @param EC50 `numeric` is a *   
-#' @param HS `numeric` is a *
-#' @param A `numeric` is a *
+#' @param conc `numeric` is an m-by-n matrix where each row represents a
+#' combination of drug concentrations acting simultaneously on a cell line.
+#' @param EC50 `numeric` is a vector of length 'd' such that each element of the
+#' vector is the EC50 of the drug whose concentrations are listed as the
+#' corresponding element of 'conc'. Values in the vector correspond to the
+#' 'D_0i' #' values of the Zimmer et al. model.
+#' @param HS `numeric` is a vector of length 'd' such that each element of the
+#' vector is the Hill slope of the drug whose concentrations are listed as the
+#' corresponding element of 'conc'. Values in the vector correspond to the
+#' 'n_i' values of the Zimmer et al. model.
+#' @param a `numeric` is a d-by-d matrix such that the (i, j)th element of the
+#' matrix is the 'a_ij' value of the corresponding drug pair in the Zimmer et
+#' al. model. Note that entries along the main diagonal should equal 1.
+#' @param unidirectional `logical` is TRUE if the simplifying assumption
+#' described in Zimmer et al. wherein drug synergy is unidirectional should be
+#' applied, and therefore that a_ji != 1 implies a_ij = 1.
 #'
 #' @export
 #' 
 #' @importFrom nleqslv nleqslv
-Katzir <- function(x, logD0s, logNs, logAs)
+Katzir <- function(conc, EC50, HS, a, unidirectional = FALSE)
 {
-  if (length(logD0s) == 2)
+  if (unidirectional)
   {
-    return (PharmacoGx:::.Katzir2(xi = x[, 1],
-                                  xj = x[, 2],
-                                  logD0i = logD0s[1],
-                                  logD0j = logD0s[2],
-                                  logNi = logNs[1],
-                                  logNj = logNs[2],
-                                  logAij = logAs[1, 2],
-                                  logAji = logAs[2, 1]))
+    if (length(logD0s) == 2)
+    {
+      return (PharmacoGx:::.Katzir2(xi = conc[[1]],
+                                    xj = conc[[2]],
+                                    logD0i = log(EC50[1]),
+                                    logD0j = log(EC50[2]),
+                                    logNi = log(HS[1]),
+                                    logNj = log(HS[2]),
+                                    logAij = log(a[1, 2]),
+                                    logAji = log(a[2, 1])))
+    }
+    
+    effectiveConcentrations <- apply(conc,
+                                     1,
+                                     function(x){return(nleqslv(x,
+                                                                fn = PharmacoGx:::.effectiveConcentrationEstimateErrors(concentrations = concs,
+                                                                                                                        logD0s = log(EC50),
+                                                                                                                        logAs = log(a))))})
+    viabilities <- lapply(1:length(conc),
+                          function(x){return(prod(PharmacoGx:::.Hill(conc[[x]],
+                                                                     c(HS[x],
+                                                                       0,
+                                                                       EC50[x]))))})
   }
-  browser()
-  effectiveConcentrations <- apply(x,
-                                   1,
-                                   function(row){return(nleqslv(x = row,
-                                                                fn = PharmacoGx:::.effectiveConcentrationEstimateErrors(concentrations = row,
-                                                                                                                        logD0s = logD0s,
-                                                                                                                        logAs = logAs)))})
-  viabilities <- apply(x,
-                       1,
-                       function(row){return(prod(sapply(row,
-                                                        function(col){return(PharmacoGx:::.Hill(col,
-                                                                                                c(exp(logNs[col]),
-                                                                                                  0,
-                                                                                                  exp(logD0s[col]))))})))})
+  else
+  {
+    drugDependencyHierarchy <- order(apply(log(a),
+                                           2,
+                                           function(x){return(sum(x != 0))}),
+                                     decreasing = FALSE)
+    effectiveConc <- conc
+    viability <- 1
+    
+    for (i in drugDependencyHierarchy)
+    {
+      for (j in seq_along(conc))
+      {
+        if (a[j, i] != 1)
+        {
+          effectiveConc[[i]] <- PharmacoGx:::.effectiveConcentration2(myConcentrations = conc[[i]],
+                                                                      otherConcentrations = conc[[j]],
+                                                                      myLogD0 = log(EC50[i]),
+                                                                      otherLogD0 = log(EC50[j]),
+                                                                      logAOtherOnMine = log(a[j, i]),
+                                                                      logAMineOnOther = 0)
+        }
+      }
+      
+      viability <- viability * PharmacoGx:::.Hill(effectiveConc[i],
+                                                  c(HS[i],
+                                                    0,
+                                                    EC50[i]))
+    }
+  }
   
   return(viabilities)
 }
@@ -120,35 +166,40 @@ Katzir <- function(x, logD0s, logNs, logAs)
                                  exp(logD0j))))
 }
 
-KatzirUnidirectional <- function(x, logD0s, logNs, logAs)
+#' Predicts the viability of cells exposed to combinations of different drugs at
+#' different concentrations acting in accordance with the drug synergy model of
+#' Zimmer et al. in their 2016 paper "Prediction of multidimensional drug dose
+#' responses based on measurements of drug pairs", under 
+#'
+#' @examples
+#' x <- c(0.0025,0.008,0.025,0.08,0.25,0.8,2.53,8)
+#' conc <- matrix(rep(x, 3), ncol = 3)
+#' EC50 <- c(1.5, -0.2, 0.3)
+#' HS <- c(0.9, 1, 0.95)
+#' A <- matrix(c(1, 0.98, 1.22, 0.45, 1, 1.32, 0.92, 1.08, 1), ncol = 3)
+#' ZimmerUnidirectional(conc, EC50, HS, A)
+#' 
+#' @param conc `numeric` is list of length 'd' such that each element of the
+#' list is a vectors of drug of a different drug
+#' @param EC50 `numeric` is a vector of length 'd' such that each element of the
+#' vector is the EC50 of the drug whose concentrations are listed as the
+#' corresponding element of 'conc'. Values in the vector correspond to the
+#' 'D_0i' #' values of the Zimmer et al. model.
+#' @param HS `numeric` is a vector of length 'd' such that each element of the
+#' vector is the Hill slope of the drug whose concentrations are listed as the
+#' corresponding element of 'conc'. Values in the vector correspond to the
+#' 'n_i' values of the Zimmer et al. model.
+#' @param a `matrix` is a d-by-d matrix such that the (i, j)th element of the
+#' matrix is the 'a_ij' value of the corresponding drug pair in the Zimmer et
+#' al. model. Note that entries along the main diagonal should equal 1.
+#'
+#' @export
+#' 
+#' @importFrom nleqslv nleqslv
+KatzirUnidirectional <- function(conc, EC50, HS, a)
+#KatzirUnidirectional <- function(x, logD0s, logNs, logAs)
 {
-  drugDependencyHierarchy <- order(apply(logAs,
-                                         2,
-                                         function(x){return(sum(x != 0))}),
-                                   decreasing = FALSE)
-  effectiveX <- x
-  viability <- 1
   
-  for (i in drugDependencyHierarchy)
-  {
-    for (j in seq_along(x))
-    {
-      if (logAs[j, i] != 0)
-      {
-        effectiveX[i] <- PharmacoGx:::.effectiveConcentration2(myConcentrations = x[i],
-                                                               otherConcentrations = x[j],
-                                                               myLogD0 = logD0s[i],
-                                                               otherLogD0 = logD0s[j],
-                                                               logAOtherOnMine = logAs[j, i],
-                                                               logAMineOnOther = 0)
-      }
-    }
-    
-    viability <- viability * PharmacoGx:::.Hill(effectiveX[i],
-                                                c(exp(logNs[i]),
-                                                  0,
-                                                  exp(logD0s[i])))
-  }
   
   return(viability)
 }
